@@ -534,6 +534,7 @@ select.f-input{appearance:none;cursor:pointer;}
     <div class="card-title">Attendance Log</div>
     <div class="att-dots mb-12" id="det-att-log"><span class="dim sm">Loading...</span></div>
     <button id="det-form14-btn" class="btn btn-ghost w-full mt-8" style="border-color:var(--teal);color:var(--teal);display:none" onclick="printForm14()">&#x1F5A8; Print Form 14 (Personal Info)</button>
+    <button id="det-form5-btn" class="btn btn-ghost w-full mt-8" style="border-color:#7C3AED;color:#7C3AED;display:none" onclick="printForm5()">&#x1F5A8; Print Form 5 (Driving Certificate)</button>
     <button class="btn btn-ghost w-full mt-8" onclick="printStudentInfo()" style="border-color:var(--blue);color:var(--blue)">&#x1F5A8; Print Form 15 (Full Record)</button>
     <button class="btn btn-ghost w-full mt-8" onclick="closeModal('modal-detail')">Close</button>
   </div>
@@ -580,7 +581,8 @@ select.f-input{appearance:none;cursor:pointer;}
   <div class="modal"><span class="modal-handle"></span>
     <div class="modal-title">Leave Requests</div>
     <div id="leave-admin-list"><span class="dim sm">Loading...</span></div>
-    <button class="btn btn-ghost w-full mt-12" onclick="closeModal('modal-leave-admin')">Close</button>
+    <button class="btn btn-red w-full mt-12" onclick="clearLeaveRequests()">&#x1F5D1; Clear Leave Requests</button>
+    <button class="btn btn-ghost w-full mt-8" onclick="closeModal('modal-leave-admin')">Close</button>
   </div>
 </div>
 
@@ -653,6 +655,7 @@ const DAY_LABELS = {mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat'}
 function genSlots(){
   const out=[];
   for(let h=7;h<19;h++){
+    if(h===13||h===14) continue; // lunch break: 1:00 PM - 3:00 PM, no slots
     for(const m of[0,30]){
       const sh=String(h).padStart(2,'0'), sm=m===0?'00':'30';
       const eh=m===30?h+1:h, em=m===30?'00':'30';
@@ -810,7 +813,6 @@ async function renderStudentMain(){
   const today=todayStr();
   const isWaiting=e.status==='waiting';
   const maxSessions=e.totalSessions||TOTAL_SESSIONS;
-  const subDays=(e.subscriptionDays||25)+10; // +10 buffer for holidays/leaves
 
   // Schedule card + holiday banner
   const todayHoliday=getHolidayForEnrollment(today,e);
@@ -1050,14 +1052,16 @@ async function loadStudentList(){
   const userMap={};
   usersSnap.docs.forEach(d=>{userMap[d.id]=d.data();});
   gStudents=enrollSnap.docs.filter(d=>!d.data().deleted).map(d=>({id:d.id,...d.data(),completedSessions:attCount[d.id]||0,phone:userMap[d.data().studentId]?.phone||'',username:userMap[d.data().studentId]?.username||''}));
-  renderStudentList(gStudents);
+  filterStudents(document.getElementById('stu-search')?.value||'');
 }
 
 function filterStudents(q){
   const ql=q.toLowerCase();
   const today=todayStr();
   const f=gStudents.filter(s=>{
-    const isActive=s.status==='active'&&today>=s.startDate&&today<=s.endDate&&!s.deleted;
+    const done=s.completedSessions||0;
+    const totSess=s.totalSessions||TOTAL_SESSIONS;
+    const isActive=s.status==='active'&&today>=s.startDate&&today<=s.endDate&&!s.deleted&&done<totSess;
     const matchTab=gStudentTab==='active'?isActive:!isActive&&!s.deleted;
     const matchQ=!q||s.studentName.toLowerCase().includes(ql)||(s.status||'').toLowerCase().includes(ql);
     return matchTab&&matchQ;
@@ -1117,6 +1121,8 @@ async function openStudentDetail(enrollId){
   const isExpired=(s.status==='cancelled')||(today>s.endDate)||(s.completedSessions||0)>=(s.totalSessions||TOTAL_SESSIONS);
   const f14btn=document.getElementById('det-form14-btn');
   if(f14btn) f14btn.style.display=isExpired?'flex':'none';
+  const f5btn=document.getElementById('det-form5-btn');
+  if(f5btn) f5btn.style.display=isExpired?'flex':'none';
   openModal('modal-detail');
   // Load student's stored password
   db.collection('users').doc(s.studentId).get().then(ud=>{
@@ -1195,9 +1201,12 @@ async function addDaysToSub(){
   const s=gStudents.find(x=>x.id===gDetEnrollId);
   if(!s) return;
   const newEnd=addDays(s.endDate,days);
+  const baseSubDays=s.subscriptionDays||(s.sessionType==='full'?15:25);
+  const newSubDays=baseSubDays+days;
   try{
-    await db.collection('enrollments').doc(gDetEnrollId).update({endDate:newEnd});
+    await db.collection('enrollments').doc(gDetEnrollId).update({endDate:newEnd,subscriptionDays:newSubDays});
     s.endDate=newEnd;
+    s.subscriptionDays=newSubDays;
     // Keep value visible so staff can see what was added
     const endEl=document.getElementById('det-enddate');
     if(endEl) endEl.textContent=fmtDate(newEnd);
@@ -1451,6 +1460,7 @@ function updateEnrollSlots(){
   if(isFull){
     let html='<option value="">Select time...</option>';
     for(let h=7;h<19;h++){
+      if(h===13||h===14) continue; // lunch break: 1:00 PM - 3:00 PM
       const s=String(h).padStart(2,'0')+':00';
       const e=String(h+1).padStart(2,'0')+':00';
       html+=`<option value="${s}|${e}">${fmtSlot(s,e)}</option>`;
@@ -1472,7 +1482,7 @@ function openSwitchModal(){
   const swSel=document.getElementById('sw-slot');
   if(isFull){
     let html='<option value="">Select time...</option>';
-    for(let h=7;h<19;h++){const st=String(h).padStart(2,'0')+':00';const en=String(h+1).padStart(2,'0')+':00';html+=`<option value="${st}|${en}" ${st===s.slotStart?'selected':''}>${fmtSlot(st,en)}</option>`;}
+    for(let h=7;h<19;h++){if(h===13||h===14) continue; const st=String(h).padStart(2,'0')+':00';const en=String(h+1).padStart(2,'0')+':00';html+=`<option value="${st}|${en}" ${st===s.slotStart?'selected':''}>${fmtSlot(st,en)}</option>`;}
     swSel.innerHTML=html;
   } else {
     swSel.innerHTML='<option value="">Select time...</option>'+ALL_SLOTS.map(sl=>`<option value="${sl.start}|${sl.end}" ${sl.start===s.slotStart?'selected':''}>${fmtSlot(sl.start,sl.end)}</option>`).join('');
@@ -1604,7 +1614,8 @@ async function addHoliday(){
       const dow = DAY_MAP[new Date(date+'T00:00:00').getUTCDay()];
       if(!e.days||!e.days.includes(dow)) return;
       const newEnd = addSchoolDays(e.endDate,1);
-      batch.update(d.ref,{endDate:newEnd});
+      const baseSubDays = e.subscriptionDays||(e.sessionType==='full'?15:25);
+      batch.update(d.ref,{endDate:newEnd,subscriptionDays:baseSubDays+1});
     });
     await batch.commit();
     toast('Holiday declared. Affected subscriptions extended by 1 day.');
@@ -1686,13 +1697,28 @@ async function processLeave(id, status){
       const eSnap=await db.collection('enrollments').where('studentId','==',leave.studentId).get();
       const activeE=eSnap.docs.find(d=>d.data().status==='active');
       if(activeE){
-        const newEnd=addSchoolDays(activeE.data().endDate,1);
-        await db.collection('enrollments').doc(activeE.id).update({endDate:newEnd});
+        const ed=activeE.data();
+        const newEnd=addSchoolDays(ed.endDate,1);
+        const baseSubDays=ed.subscriptionDays||(ed.sessionType==='full'?15:25);
+        await db.collection('enrollments').doc(activeE.id).update({endDate:newEnd,subscriptionDays:baseSubDays+1});
         toast('Leave approved — subscription extended by 1 day');
       } else { toast('Leave approved'); }
     }catch(e){ toast('Leave approved'); }
   } else { toast('Leave rejected'); }
   await openLeaveAdminModal();
+}
+
+async function clearLeaveRequests(){
+  if(!confirm('Clear ALL leave requests? This cannot be undone.')) return;
+  try{
+    const snap=await db.collection('leaveRequests').get();
+    if(snap.empty){toast('No leave requests to clear');return;}
+    const batch=db.batch();
+    snap.docs.forEach(d=>batch.delete(d.ref));
+    await batch.commit();
+    toast('All leave requests cleared');
+    await openLeaveAdminModal();
+  }catch(e){toast('Error: '+e.message);}
 }
 
 
@@ -1754,6 +1780,59 @@ async function printForm14(){
   w.document.write(html);w.document.close();
 }
 
+async function printForm5(){
+  const s=gStudents.find(x=>x.id===gDetEnrollId);
+  if(!s) return;
+  let addr='--', enrollIdVal='--';
+  try{
+    const ud=await db.collection('users').doc(gDetStudentId).get();
+    addr=ud.data()?.address||'--';
+    enrollIdVal=ud.data()?.enrollId||s.enrollId||'--';
+  }catch(_){}
+  const today=todayStr();
+  const html=`<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+  body{font-family:Arial,sans-serif;padding:36px;color:#000;max-width:720px;margin:0 auto;font-size:14px;line-height:1.9}
+  .header{text-align:center;margin-bottom:22px}
+  .form-no{font-weight:bold;font-size:16px}
+  .rules{font-size:12px;color:#333}
+  h2{font-size:16px;font-weight:bold;text-align:center;margin:14px 0;letter-spacing:.5px}
+  .line{border-bottom:1px dotted #000;display:inline-block;min-width:160px;padding:0 4px;font-weight:600}
+  .sig-row{margin-top:60px}
+  .sig-row div{margin-bottom:4px}
+  .footer{margin-top:36px;font-size:13px;line-height:1.6}
+  @media print{button{display:none}}
+</style></head>
+<body>
+<div class="header">
+  <div class="form-no">Form 5</div>
+  <div class="rules">[Refer Rules 14(e), 17(1)(b) and 31A(2)]</div>
+</div>
+<h2>DRIVING CERTIFICATE ISSUED BY DRIVING SCHOOL OR ESTABLISHMENTS</h2>
+<p>This is to certify that Shri/Smt./Kumari <span class="line">${s.studentName}</span></p>
+<p>son/daughter of <span class="line">&nbsp;</span> residing at</p>
+<p><span class="line" style="min-width:100%;display:block">${addr}</span></p>
+<p>was enrolled in <span class="line">Pravin Motor Training School</span> driving school center on <span class="line">${fmtDate(s.startDate)}</span></p>
+<p>and his/her name is registered as serial number <span class="line">${enrollIdVal}</span> in our register in Form 14</p>
+<p>and that he/she has undergone course of training in driving <span class="line">&nbsp;</span> (mention class of vehicle)</p>
+<p>according to the syllabus prescribed for a period <span class="line">${fmtDate(s.startDate)}</span> to <span class="line">${fmtDate(s.endDate)}</span> satisfactorily.</p>
+<p>Vehicle used for training: <span class="line">${s.carName||'--'}${s.carNumber?' ('+s.carNumber+')':''}</span></p>
+<p>I am satisfied with his/her physical fitness and sense of responsibility.</p>
+<div class="sig-row">
+  <div>Signature.......................................</div>
+  <div>Name and designation.......................................</div>
+</div>
+<div class="footer">
+  PRAVIN MOTOR TRAINING SCHOOL, MH03 5(1996) 59, 1996-04-19, 280/10 SHIVNERI<br>
+  BLDG, 90 FEET ROAD, PANT NAGAR,<br>
+  GHATKOPAR (EAST), MUMBAI, GREATER
+</div>
+<script>window.onload=function(){window.print();}<\/script>
+</body></html>`;
+  const w=window.open('','_blank','width=800,height=600');
+  w.document.write(html);w.document.close();
+}
+
 async function printStudentInfo(){
   const s=gStudents.find(x=>x.id===gDetEnrollId);
   if(!s) return;
@@ -1765,7 +1844,7 @@ async function printStudentInfo(){
   try{
     const aSnap=await db.collection('attendance').where('enrollmentId','==',gDetEnrollId).get();
     const aMap=new Map(aSnap.docs.map(d=>[d.data().date,d.data()]));
-    const scheduled=getScheduledDays(s,(s.subscriptionDays||25)+10);
+    const scheduled=getScheduledDays(s,s.subscriptionDays||(s.sessionType==='full'?15:25));
     const today=todayStr();
     attRows=scheduled.map((d,i)=>{
       const rec=aMap.get(d);
